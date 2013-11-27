@@ -1,0 +1,247 @@
+function quantisnp2main(options);
+
+% extract run-time options
+sampleId 	= options.sampleId;
+infile 		= options.infile;
+outfile 	= options.outfile;
+isMaleX 	= options.isMaleX;
+EMiters 	= options.EMiters;
+doGCcorrect = options.doGCcorrect;
+gcdir 		= options.gcdir;
+chrRange 	= options.chrRange;
+isAffy 		= options.isAffy;
+subSampleLevel = options.subSampleLevel;
+L 			= options.L;
+doPlot 		= options.doPlot;
+doXcorrect 	= options.doXcorrect;
+chrX 		= options.chrX;
+
+startTime = cputime; 
+
+% load data
+[rs, chr, pos, r, b] = textread(infile, '%s %s %n %n %n', 'headerlines', 1);
+
+% filter out bad data
+loc = find( ~isnan(r) & ~isnan(b) & ~isinf(r) & ~isinf(b) );
+rs = rs(loc);
+chr = chr(loc);
+pos = pos(loc);
+r = r(loc);
+b = b(loc);
+
+% do median correction
+loc = find( ~isnan(r) & ~isinf(b) );
+r 	= r - median(r(loc));
+
+% load hyperparameters
+r_max = max(max(r), 1);
+r_min = min(min(r), -4);
+
+loadparameters;
+
+fprintf('%s', 'QuantiSNP. Initialising data structures: ');
+for chrNo = chrRange
+    
+    fprintf(' %g', chrNo);
+    
+    if chrNo < chrX
+        chrloc = strmatch(num2str(chrNo), chr, 'exact');
+        gcfile = [ gcdir num2str(chrNo) '_1k.txt' ];
+    else
+        chrloc = strmatch('X', chr, 'exact');
+        gcfile = [ gcdir 'X_1k.txt' ];
+    end
+    
+    if length(chrloc) < 10
+        continue;
+    end
+    
+    dataObj{chrNo}.rs  		= rs(chrloc);
+    dataObj{chrNo}.pos 		= pos(chrloc);
+    dataObj{chrNo}.x(:, 2) 	= r(chrloc);
+    dataObj{chrNo}.x(:, 1) 	= b(chrloc);
+    
+    [dataObj{chrNo}.pos, I] = sort(dataObj{chrNo}.pos);
+    dataObj{chrNo}.rs 		= dataObj{chrNo}.rs(I);
+    dataObj{chrNo}.x(:, 2) 	= dataObj{chrNo}.x(I, 2);
+    dataObj{chrNo}.x(:, 1) 	= dataObj{chrNo}.x(I, 1);
+    
+    if isAffy == 1
+        dataObj{chrNo}.snploc = strmatch('SNP', dataObj{chrNo}.rs);
+        dataObj{chrNo}.cnvloc = strmatch('CN', dataObj{chrNo}.rs);
+    else
+        dataObj{chrNo}.snploc = strmatch('rs', dataObj{chrNo}.rs);
+        dataObj{chrNo}.cnvloc = strmatch('cnv', dataObj{chrNo}.rs);
+    end
+    if length(dataObj{chrNo}.cnvloc) > 1
+        cnvProbesFound = 1;
+    else
+        cnvProbesFound = 0;
+    end
+    
+    % do gc correction
+    if doGCcorrect == 1
+    	disp(['QuantiSNP: Reading local GC content file for chr: ' num2str(chrNo) ]);
+    	try
+	        [gcpos, gcend, gc] = textread(gcfile, '%n %n %n');
+        catch
+        	disp(['QuantiSNP: Unable to read GC content file.']);
+        	return;
+        end
+        gc_s = nanmoving_average(gc, 100);
+        gc_chr = interp1(gcpos, gc_s, dataObj{chrNo}.pos, 'nearest', 'extrap');
+        betas = robustfit(gc_chr, dataObj{chrNo}.x(:, 2));
+		disp(['QuantiSNP: Correcting using local GC content for chr: ' num2str(chrNo) ]);
+        dataObj{chrNo}.x(:, 2) =  dataObj{chrNo}.x(:, 2) - betas(1) - betas(2)*gc_chr;
+    end
+    
+    % do chrX correction
+    if chrNo == chrX & doXcorrect == 1
+        dataObj{chrNo}.x(:, 2) = dataObj{chrNo}.x(:, 2) - median(dataObj{chrNo}.x(:, 2));
+        if isMaleX == 1
+            dataObj{chrNo}.x(:, 2) = dataObj{chrNo}.x(:, 2) + hyperparams.m_r(2);
+        end
+    end
+    
+    %% generate sub-samples by sampling from uniformly spaced quantiles
+	[r_sorted, I] = sort(dataObj{chrNo}.x(:, 2));
+
+	n = length(dataObj{chrNo}.pos);
+	loc = [ 1 : n ];
+
+	loc = loc(I);
+	loc = loc(1:subSampleLevel:end);
+	loc = sort(loc);	
+	
+    dataObjSub{chrNo}.pos   = dataObj{chrNo}.pos(loc);
+    dataObjSub{chrNo}.x     = dataObj{chrNo}.x(loc, :);
+    
+    if isAffy == 1
+        dataObjSub{chrNo}.snploc = strmatch('SNP', 	dataObj{chrNo}.rs(loc));
+        dataObjSub{chrNo}.cnvloc = strmatch('CN', 	dataObj{chrNo}.rs(loc));
+    else
+        dataObjSub{chrNo}.snploc = strmatch('rs', 	dataObj{chrNo}.rs(loc));
+        dataObjSub{chrNo}.cnvloc = strmatch('cnv', 	dataObj{chrNo}.rs(loc));
+    end
+    
+end
+fprintf('\n');
+
+
+clear rs chr pos r b gcfile gcpos gcend gc gc_s gc_chr betas nanloc I chrloc;
+
+
+for it = 1 : EMiters
+    
+    disp(['QuantiSNP. EM Iteration: ' num2str(it) ]);
+    
+    %% calculate expectations
+    fprintf('\tCalculating expectations: ');
+    loglik = zeros(1, max(chrRange));
+    for chrNo = chrRange
+        
+        fprintf(' %g', chrNo);
+        
+        nprobes = length(dataObjSub{chrNo}.pos);
+        if nprobes < 10
+            continue;
+        end
+        
+        transitionMatrix = computeTransitionMatrix(dataObjSub{chrNo}.pos, hyperparams.nStates+1, options.L, hyperparams);
+        
+        [obslike_sum, genotype_alloc_prob, comp_alloc_prob, u] = ...
+            calcObslike(dataObjSub{chrNo}, params, hyperparams);
+        
+        [gamma, loglik(chrNo)] = ...
+            fwdback(prior, transitionMatrix, exp(obslike_sum));
+        
+        expectationObj{chrNo}.gamma = gamma;
+        expectationObj{chrNo}.genotype_alloc_prob = genotype_alloc_prob;
+        expectationObj{chrNo}.comp_alloc_prob = comp_alloc_prob;
+        expectationObj{chrNo}.u = u;
+        
+    end
+    fprintf('\n');
+    
+    dispstr('\tLog-likelihood: %s', sum(loglik));
+    
+    %% update parameters
+    dispstr('\tUpdating parameters.');
+    
+    params = updateParams(expectationObj, dataObjSub, params, hyperparams, options);
+    
+end
+
+
+%% process full dataset
+clear dataObjSub expectationObj fwdProb backProb gamma loglik fwdScale obslike_sum transitionMatrix;
+
+fprintf('%s', 'QuantiSNP. Scanning all data: ');
+
+for chrNo = chrRange
+    
+    fprintf(' %g', chrNo);
+    
+    nprobes = length(dataObj{chrNo}.pos);
+    if nprobes < 10
+        continue;
+    end
+    
+    transitionMatrix = computeTransitionMatrix(dataObj{chrNo}.pos, hyperparams.nStates+1, options.L, hyperparams);
+    
+    [obslike_sum, genotype_alloc_prob{chrNo}] = ...
+        calcObslike(dataObj{chrNo}, params, hyperparams);
+    
+    [gamma, loglik(chrNo), fwdProb, backProb, fwdScale, backScale] = ...
+        fwdback(prior, transitionMatrix, exp(obslike_sum));
+    
+    viterbipath{chrNo} = viterbi_path(prior, transitionMatrix, exp(obslike_sum));
+    
+    model_params.state_prior        = prior;
+    model_params.transitionMatrix   = transitionMatrix;
+    model_params.obsLike            = exp(obslike_sum);
+    model_params.fwdprob            = fwdProb;
+    model_params.backprob           = backProb;
+    model_params.fwdscale           = fwdScale;
+    model_params.backscale          = backScale;
+    model_params.gamma              = gamma;
+	
+    clear gamma fwdProb backProb fwdScale backScale obslike_sum transitionMatrix;
+	
+    if chrNo == chrX
+        CNV{chrNo} = findDupDel(viterbipath{chrNo}, dataObj{chrNo}.rs, dataObj{chrNo}.pos, model_params, isMaleX, nStates+1, hyperparams);
+    else
+        CNV{chrNo} = findDupDel(viterbipath{chrNo}, dataObj{chrNo}.rs, dataObj{chrNo}.pos, model_params, 0, nStates+1, hyperparams);
+    end
+
+	clear model_params;
+    
+end
+fprintf('\n');
+
+%% write to file
+fprintf('%s %s\n', 'QuantiSNP. Writing output to file: ', options.outfile);
+writeCNVtoFile(options.outfile, sampleId, chrRange, CNV);
+
+%% plot to file
+if options.doPlot
+  fprintf('%s %s\n', 'QuantiSNP. Plotting to file: ', options.outfile_plot);
+  PlotToFile2(dataObj, CNV, options);
+end
+
+%% write genotypes to file
+fprintf('%s %s\n', 'QuantiSNP. Writing genotypes to file: ', options.outfile_genotype);
+if options.doGenotyping
+  genotype(CNV, viterbipath, genotype_alloc_prob, dataObj, options, hyperparams);
+end
+
+fprintf('%s %s\n', 'QuantiSNP. Writing QC file: ', options.outfile_qc);
+generateQC(params, options);
+
+endTime = cputime;
+
+timeTaken = (endTime - startTime)/60;
+
+str = [ 'QuantiSNP: Done in ' num2str(timeTaken, '%1.2f') ' mins.' ];
+disp(str);
+

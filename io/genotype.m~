@@ -1,0 +1,78 @@
+function genotype(CNV, vpath, genotype_alloc_prob, dataObj, options, hyperparams)
+
+gnLabel = hyperparams.gnLabel;
+
+fid = fopen(options.outfile_genotype, 'wt');
+
+fprintf(fid,'%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n', ...
+            'ProbeName', 'Chr', 'Position', 'Log R Ratio', 'B Allele Frequency', ...
+            'Copy Number', 'Max. BF', 'Generalised Genotype', 'Generalised Genotype Prob', ...
+            'Diploid Genotype', 'Diploid Genotype Prob' );
+       
+
+for chrNo = options.chrRange
+    
+    rs = dataObj{chrNo}.rs;
+    pos = dataObj{chrNo}.pos;
+    b = dataObj{chrNo}.x(:, 1);
+    r = dataObj{chrNo}.x(:, 2);
+    snploc = dataObj{chrNo}.snploc;
+    cnvloc = dataObj{chrNo}.cnvloc;
+    v = vpath{chrNo};
+    
+    nProbes = length(pos);
+    
+    probeType = zeros(nProbes, 1);
+    probeType(cnvloc) = 1;
+   
+    cnSeq = 2*ones(nProbes, 1);
+    if chrNo == options.chrX & options.isMaleX
+        cnSeq(:) = 1;
+    end
+    bfSeq = NaN*zeros(nProbes, 1);
+    
+    nCNV = length(CNV{chrNo});
+    for cnvNo = 1 : nCNV
+        index   = CNV{chrNo}{cnvNo}.index;
+        bf      = CNV{chrNo}{cnvNo}.delta;
+        cn      = CNV{chrNo}{cnvNo}.copy;
+        cnSeq(index(1):index(2)) = cn;
+        bfSeq(index(1):index(2)) = max(bf);
+    end
+    
+    for t = 1 : nProbes
+        
+        if probeType(t) == 1
+		
+            ggn_txt 	= 'NA';
+            gn_txt 		= 'NA';
+            gn_prob 	= -1;
+            ggn_prob 	= -1;
+			
+        else
+
+			if v(t) ~= 1 & v(t) ~= hyperparams.nStates+1
+				[ ggn_prob, ggn ] = max( genotype_alloc_prob{chrNo}{v(t)}(:, t) );
+				ggn_txt = gnLabel{v(t)}{ggn};            
+				[ gn_prob, gn ] = max( genotype_alloc_prob{chrNo}{3}(:, t) );	            
+				gn_txt = gnLabel{3}{gn};
+			else
+				ggn_txt 	= 'NN';
+				gn_txt 	= 'NN';
+				gn_prob 	= -1;
+				ggn_prob 	= -1;
+			end
+            
+        end
+        
+        fprintf(fid,'%s\t%2.0f\t%15.0f\t%1.3f\t%1.3f\t%1.0f\t%10.3f\t%s\t%1.3f\t%s\t%1.3f\n', ...
+            rs{t}, chrNo, pos(t), r(t), b(t), cnSeq(t), bfSeq(t), ggn_txt, ggn_prob, gn_txt, gn_prob );
+        
+    end
+    
+end
+
+fclose(fid);
+
+gzip(options.outfile_genotype);
+delete(options.outfile_genotype);

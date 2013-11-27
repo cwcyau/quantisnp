@@ -1,0 +1,11 @@
+Parameter	Value	Description
+nComp	3	Number of mixture components
+v	10	Degrees of freedom of Student t-distribution
+nu_alpha	1	Shape parameter of Beta prior on outlier rate
+nu_beta	1	Shape parameter of Beta prior on outlier rate
+w_alpha	1e4	Scale parameter of Dirichlet prior on genotype proportions
+q_alpha	10	Scale parameter of Dirichlet prior on mixture proportions
+tau	1e4	Concentration parameter of Normal-Wishart prior
+S_alpha	3	Scale parameter of Wishart prior on covariance matrix
+S_alpha_homdel	3	Scale parameter of Wishart prior on covariance matrix (Homozygous Deletion)
+longChromosome	2e6	Characteristic length for normal state

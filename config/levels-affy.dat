@@ -1,0 +1,8 @@
+CopyNumber	MeanLogRRatio	Comment
+0	-2	Homozygous deletion
+1	-0.58	Hemizygous deletion
+2 	0.0	Normal
+2 	0.0	Copy-Neutral LOH
+3	0.44	Duplication
+4	0.6	Double duplication
+5	2	All Higher copy numbers (DO NOT MODIFY)
